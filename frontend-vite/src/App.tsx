@@ -15,8 +15,8 @@ import {
   FiArrowDownCircle,
 } from 'react-icons/fi'
 
-// --- ADDED: CLERK IMPORTS ---
-import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react';
+// --- ADDED: CLERK IMPORTS (Now includes useUser) ---
+import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from '@clerk/clerk-react';
 
 // --- LAZY LOAD THE 3D COMPONENT FOR PERFORMANCE ---
 const Spline = lazy(() => import('@splinetool/react-spline'));
@@ -30,13 +30,10 @@ function useMediaQuery(query: string) {
     if (media.matches !== matches) {
       setMatches(media.matches);
     }
-    
     const listener = () => {
       setMatches(media.matches);
     };
-    
     media.addEventListener('change', listener);
-    
     return () => media.removeEventListener('change', listener);
   }, [matches, query]);
 
@@ -47,7 +44,7 @@ function useMediaQuery(query: string) {
 type Language = 'en' | 'hi' | 'es' | 'fr' | 'de'
 type Segment = { index: number; start: number; end: number; text: string }
 
-// --- UTILITY FUNCTIONS ---
+// --- UTILITY FUNCTIONS (No changes, all good) ---
 function secondsToTimestamp(seconds: number) {
   const hrs = Math.floor(seconds / 3600)
   const mins = Math.floor((seconds % 3600) / 60)
@@ -79,14 +76,18 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [language, setLanguage] = useState<Language>('en')
   const [task, setTask] = useState<'transcribe' | 'translate' | 'transliterate'>('transcribe')
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  
+  const [isSubmitting, setIsSubmitting] = useState(false) // For the initial file upload
+  const [isPolling, setIsPolling] = useState(false)       // For the backend processing
+  const [error, setError] = useState<string | null>(null) // For internal error state
   const [segments, setSegments] = useState<Segment[] | null>(null)
+  const [predictionId, setPredictionId] = useState<string | null>(null) // For polling
 
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const mainContentRef = useRef<HTMLElement | null>(null)
+  const { user } = useUser(); // <-- ADDED: Get the logged-in user
 
-  // --- MEMOS ---
+  // --- MEMOS (No changes, all good) ---
   const srtUrl = useMemo(() => {
     if (!segments) return null
     const blob = new Blob([toSRT(segments)], { type: 'text/plain' })
@@ -99,6 +100,15 @@ export default function App() {
     return URL.createObjectURL(blob)
   }, [segments])
 
+  // --- Helper to clear state ---
+  const clearState = () => {
+    setError(null);
+    setSegments(null);
+    setPredictionId(null);
+    setIsSubmitting(false);
+    setIsPolling(false);
+  }
+
   // --- HANDLERS ---
   const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[]) => {
     if (fileRejections.length > 0) {
@@ -108,8 +118,7 @@ export default function App() {
     
     const f = acceptedFiles?.[0]
     if (f) {
-      setSegments(null)
-      setError(null)
+      clearState(); // <-- CHANGED: Clear all old results
       setFile(f)
       setVideoUrl(URL.createObjectURL(f))
       toast.success(`${f.name} selected!`)
@@ -128,27 +137,34 @@ export default function App() {
   
   const onLanguageChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setLanguage(e.target.value as Language)
-    setSegments(null)
-    setError(null)
+    clearState(); // <-- CHANGED
   }, [])
 
   const onTaskChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setTask(e.target.value as 'transcribe' | 'translate' | 'transliterate')
-    setSegments(null)
-    setError(null)
+    clearState(); // <-- CHANGED
   }, [])
 
+  const handleScrollToMain = () => {
+    mainContentRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  // --- NEW: onSubmit Function (Completely Rewritten) ---
   const onSubmit = useCallback(async () => {
     if (!file) {
       toast.error('Please select a file first.')
       return
     }
     
-    setIsSubmitting(true)
-    setError(null)
-    setSegments(null)
+    // Check for user login (Clerk)
+    if (!user) {
+      toast.error('Please sign in to generate captions.');
+      return;
+    }
     
-    const processingToast = toast.loading('Generating your captions, please wait...')
+    clearState();
+    setIsSubmitting(true);
+    const processingToast = toast.loading('Uploading your video...');
 
     try {
       const form = new FormData()
@@ -156,12 +172,10 @@ export default function App() {
       form.append('language', language)
       form.append('task', task)
       
-      const res = await fetch('https://destroyable-depreciatingly-lynetta.ngrok-free.dev/upload' , {
+      // --- This is Endpoint 1: Start the Job ---
+      const res = await fetch('/api/start-transcription', { // <-- CHANGED URL
         method : 'POST' ,
         body : form ,
-        headers : {
-          'ngrok-skip-browser-warning' : 'true'
-        }
       })
       
       if (!res.ok) {
@@ -169,28 +183,67 @@ export default function App() {
         throw new Error(errorData.detail || `HTTP ${res.status}`)
       }
       
-      const data = await res.json()
-      setSegments(data.segments)
-      toast.success('Captions generated successfully!', { id: processingToast })
+      const prediction = await res.json()
+
+      // Job started successfully, now we poll
+      setPredictionId(prediction.id); // This will trigger the useEffect
+      setIsPolling(true);
+      toast.success('Upload complete! Processing video...', { id: processingToast });
 
     } catch (err: any) {
       const errorMsg = err?.message || 'Something went wrong'
       setError(errorMsg)
       toast.error(errorMsg, { id: processingToast })
     } finally {
-      setIsSubmitting(false)
+      setIsSubmitting(false); // Finished the "submitting" part
     }
-  }, [file, language, task])
+  }, [file, language, task, user]) // <-- Added `user` dependency
 
-  const handleScrollToMain = () => {
-    mainContentRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
+  // --- NEW: useEffect for Polling (Endpoint 2) ---
+  useEffect(() => {
+    if (!isPolling || !predictionId) return;
+
+    // Give the loading toast a consistent ID to update it
+    const processingToastId = 'processing-toast';
+    toast.loading('Generating captions... (This may take a minute)', { id: processingToastId });
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/check-status?id=${predictionId}&task=${task}`);
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.detail || 'Failed to check status');
+
+        if (data.status === 'succeeded') {
+          clearInterval(interval);
+          setIsPolling(false);
+          setSegments(data.output.segments);
+          toast.success('Captions generated successfully!', { id: processingToastId });
+        } else if (data.status === 'failed' || data.status === 'canceled') {
+          clearInterval(interval);
+          setIsPolling(false);
+          const errorMsg = data.error || 'Job failed';
+          setError(errorMsg);
+          toast.error(errorMsg, { id: processingToastId });
+        }
+        // else: status is 'starting' or 'processing', do nothing and let it poll again
+      } catch (err: any) {
+        clearInterval(interval);
+        setIsPolling(false);
+        setError(err.message);
+        toast.error(err.message, { id: processingToastId });
+      }
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(interval); // Cleanup on component unmount or state change
+  }, [isPolling, predictionId, task]);
+
 
   // --- JSX RENDER ---
   return (
     <div className="relative w-full bg-[#11151C]">
       
-      {/* --- Layer 1 - Conditionally rendered 3D Background --- */}
+      {/* --- Layer 1 - 3D Background (Your code is perfect) --- */}
       <Suspense fallback={null}>
         {isDesktop && (
           <Spline
@@ -220,10 +273,9 @@ export default function App() {
           }}
         />
         
-        {/* --- MODIFIED: Header with Clerk Auth --- */}
+        {/* --- Header with Clerk (Your code is perfect) --- */}
         <header className={`sticky top-0 z-20 border-b ${isDesktop ? 'border-gray-700/50 bg-[#212D40]/80 backdrop-blur-md' : 'border-gray-700 bg-[#212D40]'}`}>
           <div className="mx-auto flex max-w-7xl items-center justify-between p-4">
-            {/* --- Existing Logo --- */}
             <h1 className="text-xl font-bold text-white">
               <span className="inline-flex items-center gap-0">
                 <motion.img
@@ -236,8 +288,6 @@ export default function App() {
                 <span className="-ml-1">CAPTIQ</span>
               </span>
             </h1>
-            
-            {/* --- ADDED: CLERK AUTH BUTTONS --- */}
             <div>
               <SignedOut>
                 <SignInButton />
@@ -246,12 +296,10 @@ export default function App() {
                 <UserButton />
               </SignedIn>
             </div>
-            {/* --- END: CLERK AUTH BUTTONS --- */}
-
           </div>
         </header>
 
-        {/* Hero Section (Text-only) */}
+        {/* Hero Section (Your code is perfect) */}
           <section className="mx-auto max-w-3xl px-4 py-16 md:py-24">
            <motion.div
              initial={{ opacity: 0, x: -50 }}
@@ -281,7 +329,7 @@ export default function App() {
         {/* Main Content (ref for scrolling) */}
         <main ref={mainContentRef} className="mx-auto max-w-5xl p-4 md:grid md:grid-cols-3 md:gap-8 md:p-6 scroll-mt-20">
           
-          {/* --- Controls Panel --- */}
+          {/* --- Controls Panel (Your code is perfect) --- */}
           <motion.div
             initial={{ opacity: 0, y: 50 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -373,11 +421,15 @@ export default function App() {
             <div className="mt-8">
               <button
                 onClick={onSubmit}
-                disabled={!file || isSubmitting}
+                disabled={!file || isSubmitting || isPolling} // <-- CHANGED: Disable on poll
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-lg transition-all hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isSubmitting ? (
-                  <> <ClipLoader color="#ffffff" size={20} /> <span>Generating...</span> </>
+                {/* --- CHANGED: Show correct loading state --- */}
+                {(isSubmitting || isPolling) ? (
+                  <> 
+                    <ClipLoader color="#ffffff" size={20} /> 
+                    <span>{isSubmitting ? 'Uploading...' : 'Processing...'}</span> 
+                  </>
                 ) : (
                   <> <FiUpload /> <span>Generate Captions</span> </>
                 )}
@@ -385,7 +437,7 @@ export default function App() {
             </div>
           </motion.div>
 
-          {/* --- Results Area --- */}
+          {/* --- Results Area (Your code is perfect) --- */}
           <motion.div
             className="mt-8 flex flex-col gap-8 md:col-span-2 md:mt-0"
           >
@@ -448,11 +500,23 @@ export default function App() {
                 )}
               </div>
 
-              {!segments && (
+              {/* --- CHANGED: Show loading/empty state correctly --- */}
+              {!segments && !isPolling && !isSubmitting && (
                 <div className="flex h-48 items-center justify-center rounded-md border-2 border-dashed border-gray-700">
                   <p className="text-center text-sm text-gray-500">
                     Your generated transcript will appear here.
                   </p>
+                </div>
+              )}
+              
+              {(isPolling || isSubmitting) && !segments && (
+                <div className="flex h-48 items-center justify-center rounded-md border-2 border-dashed border-gray-700">
+                  <div className="flex flex-col items-center gap-2">
+                    <ClipLoader color="#3B82F6" size={30} />
+                    <p className="text-center text-sm text-gray-400">
+                      {isSubmitting ? 'Uploading...' : 'Processing...'}
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -473,7 +537,7 @@ export default function App() {
           </motion.div>
         </main>
 
-        {/* --- Footer --- */}
+        {/* --- Footer (Your code is perfect) --- */}
         <footer className={`p-4 md:p-8 lg:p-10 mt-16 border-t ${isDesktop ? 'border-gray-700/50 bg-[#212D40]/80 backdrop-blur-md' : 'border-gray-700 bg-[#212D40]'}`}>
           <div className="mx-auto max-w-screen-xl text-center">
             <motion.a
@@ -513,7 +577,6 @@ export default function App() {
             <span className="text-sm text-gray-500 sm:text-center dark:text-gray-400">© 2025 <motion.a href="#" className="hover:underline" whileHover={{ y: -1 }} transition={{ duration: 0.15 }}>CAPTIQ™</motion.a>. All Rights Reserved.</span>
           </div>
         </footer>
-
         
       </div>
     </div>

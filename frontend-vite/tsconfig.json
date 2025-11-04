@@ -12,7 +12,7 @@
     "jsx": "react-jsx",
     "strict": true
   },
-  "include": ["src"]
+  "include": ["src","vite-env.d.ts"]
 }
 
 

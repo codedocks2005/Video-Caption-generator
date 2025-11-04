@@ -4,7 +4,7 @@ import { ClerkProvider } from '@clerk/clerk-react';
 import './index.css';
 import App from './App';
 
-const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
+const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 console.log("Loaded key:", clerkPublishableKey);
 
