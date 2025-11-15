@@ -14,12 +14,17 @@ import {
   FiEdit3,
   FiArrowDownCircle,
 } from 'react-icons/fi'
+import axios from 'axios' // <-- ADDED AXIOS
 
 // --- ADDED: CLERK IMPORTS (Now includes useUser) ---
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from '@clerk/clerk-react';
 
 // --- LAZY LOAD THE 3D COMPONENT FOR PERFORMANCE ---
 const Spline = lazy(() => import('@splinetool/react-spline'));
+
+// --- PASTE YOUR HUGGING FACE URL HERE ---
+const HF_API_URL = "https://darshan0101-captiq-backend.hf.space/upload";
+// -----------------------------------------
 
 // --- Custom Hook to check for Desktop ---
 function useMediaQuery(query: string) {
@@ -44,7 +49,7 @@ function useMediaQuery(query: string) {
 type Language = 'en' | 'hi' | 'es' | 'fr' | 'de'
 type Segment = { index: number; start: number; end: number; text: string }
 
-// --- UTILITY FUNCTIONS (No changes, all good) ---
+// --- UTILITY FUNCTIONS ---
 function secondsToTimestamp(seconds: number) {
   const hrs = Math.floor(seconds / 3600)
   const mins = Math.floor((seconds % 3600) / 60)
@@ -71,23 +76,21 @@ function toPlainText(segments: Segment[]) {
 
 // --- APP COMPONENT ---
 export default function App() {
-  // --- STATE ---
+  // --- STATE (Simplified) ---
   const [file, setFile] = useState<File | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [language, setLanguage] = useState<Language>('en')
   const [task, setTask] = useState<'transcribe' | 'translate' | 'transliterate'>('transcribe')
   
-  const [isSubmitting, setIsSubmitting] = useState(false) // For the initial file upload
-  const [isPolling, setIsPolling] = useState(false)       // For the backend processing
-  const [error, setError] = useState<string | null>(null) // For internal error state
+  const [isLoading, setIsLoading] = useState(false) // <-- SIMPLIFIED
+  const [error, setError] = useState<string | null>(null)
   const [segments, setSegments] = useState<Segment[] | null>(null)
-  const [predictionId, setPredictionId] = useState<string | null>(null) // For polling
 
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const mainContentRef = useRef<HTMLElement | null>(null)
-  const { user } = useUser(); // <-- ADDED: Get the logged-in user
+  const { user } = useUser();
 
-  // --- MEMOS (No changes, all good) ---
+  // --- MEMOS ---
   const srtUrl = useMemo(() => {
     if (!segments) return null
     const blob = new Blob([toSRT(segments)], { type: 'text/plain' })
@@ -104,9 +107,7 @@ export default function App() {
   const clearState = () => {
     setError(null);
     setSegments(null);
-    setPredictionId(null);
-    setIsSubmitting(false);
-    setIsPolling(false);
+    setIsLoading(false);
   }
 
   // --- HANDLERS ---
@@ -118,7 +119,7 @@ export default function App() {
     
     const f = acceptedFiles?.[0]
     if (f) {
-      clearState(); // <-- CHANGED: Clear all old results
+      clearState(); 
       setFile(f)
       setVideoUrl(URL.createObjectURL(f))
       toast.success(`${f.name} selected!`)
@@ -131,40 +132,40 @@ export default function App() {
       'video/mp4': ['.mp4'],
       'video/quicktime': ['.mov'],
       'video/x-msvideo': ['.avi'],
+      'audio/*': ['.mp3', '.wav', '.m4a'], // Added audio
     },
     maxFiles: 1,
   })
   
   const onLanguageChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setLanguage(e.target.value as Language)
-    clearState(); // <-- CHANGED
+    clearState(); 
   }, [])
 
   const onTaskChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setTask(e.target.value as 'transcribe' | 'translate' | 'transliterate')
-    clearState(); // <-- CHANGED
+    clearState(); 
   }, [])
 
   const handleScrollToMain = () => {
     mainContentRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
-  // --- NEW: onSubmit Function (Completely Rewritten) ---
+  // --- onSubmit Function (Rewritten for Direct API Call) ---
   const onSubmit = useCallback(async () => {
     if (!file) {
       toast.error('Please select a file first.')
       return
     }
     
-    // Check for user login (Clerk)
     if (!user) {
       toast.error('Please sign in to generate captions.');
       return;
     }
     
     clearState();
-    setIsSubmitting(true);
-    const processingToast = toast.loading('Uploading your video...');
+    setIsLoading(true);
+    const processingToast = toast.loading('Uploading & Processing... (This may take several minutes)');
 
     try {
       const form = new FormData()
@@ -172,78 +173,44 @@ export default function App() {
       form.append('language', language)
       form.append('task', task)
       
-      // --- This is Endpoint 1: Start the Job ---
-      const res = await fetch('/api/start-transcription', { // <-- CHANGED URL
-        method : 'POST' ,
-        body : form ,
+      // --- This is the new Direct Call to Hugging Face ---
+      const response = await axios.post(HF_API_URL, form, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
       })
       
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }))
-        throw new Error(errorData.detail || `HTTP ${res.status}`)
+      // --- Job is done! No polling. ---
+      if (response.data.segments) {
+        // Add index to segments for key prop and SRT generation
+        const segmentsWithIndex: Segment[] = response.data.segments.map((seg: any, index: number) => ({
+          ...seg,
+          index: index + 1,
+        }));
+        
+        setSegments(segmentsWithIndex);
+        toast.success('Captions generated successfully!', { id: processingToast });
+      } else if (response.data.error) {
+        throw new Error(response.data.error);
+      } else {
+        throw new Error('An unknown API error occurred.');
       }
-      
-      const prediction = await res.json()
-
-      // Job started successfully, now we poll
-      setPredictionId(prediction.id); // This will trigger the useEffect
-      setIsPolling(true);
-      toast.success('Upload complete! Processing video...', { id: processingToast });
 
     } catch (err: any) {
-      const errorMsg = err?.message || 'Something went wrong'
+      const hfError = err.response?.data?.error; // Get error from HF response
+      const errorMsg = hfError || err?.message || 'Something went wrong';
       setError(errorMsg)
       toast.error(errorMsg, { id: processingToast })
     } finally {
-      setIsSubmitting(false); // Finished the "submitting" part
+      setIsLoading(false); // Finished loading
     }
   }, [file, language, task, user]) // <-- Added `user` dependency
-
-  // --- NEW: useEffect for Polling (Endpoint 2) ---
-  useEffect(() => {
-    if (!isPolling || !predictionId) return;
-
-    // Give the loading toast a consistent ID to update it
-    const processingToastId = 'processing-toast';
-    toast.loading('Generating captions... (This may take a minute)', { id: processingToastId });
-
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/check-status?id=${predictionId}&task=${task}`);
-        const data = await res.json();
-
-        if (!res.ok) throw new Error(data.detail || 'Failed to check status');
-
-        if (data.status === 'succeeded') {
-          clearInterval(interval);
-          setIsPolling(false);
-          setSegments(data.output.segments);
-          toast.success('Captions generated successfully!', { id: processingToastId });
-        } else if (data.status === 'failed' || data.status === 'canceled') {
-          clearInterval(interval);
-          setIsPolling(false);
-          const errorMsg = data.error || 'Job failed';
-          setError(errorMsg);
-          toast.error(errorMsg, { id: processingToastId });
-        }
-        // else: status is 'starting' or 'processing', do nothing and let it poll again
-      } catch (err: any) {
-        clearInterval(interval);
-        setIsPolling(false);
-        setError(err.message);
-        toast.error(err.message, { id: processingToastId });
-      }
-    }, 3000); // Poll every 3 seconds
-
-    return () => clearInterval(interval); // Cleanup on component unmount or state change
-  }, [isPolling, predictionId, task]);
-
 
   // --- JSX RENDER ---
   return (
     <div className="relative w-full bg-[#11151C]">
       
-      {/* --- Layer 1 - 3D Background (Your code is perfect) --- */}
+      {/* --- Layer 1 - 3D Background --- */}
       <Suspense fallback={null}>
         {isDesktop && (
           <Spline
@@ -273,7 +240,7 @@ export default function App() {
           }}
         />
         
-        {/* --- Header with Clerk (Your code is perfect) --- */}
+        {/* --- Header with Clerk --- */}
         <header className={`sticky top-0 z-20 border-b ${isDesktop ? 'border-gray-700/50 bg-[#212D40]/80 backdrop-blur-md' : 'border-gray-700 bg-[#212D40]'}`}>
           <div className="mx-auto flex max-w-7xl items-center justify-between p-4">
             <h1 className="text-xl font-bold text-white">
@@ -299,7 +266,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Hero Section (Your code is perfect) */}
+        {/* Hero Section */}
           <section className="mx-auto max-w-3xl px-4 py-16 md:py-24">
            <motion.div
              initial={{ opacity: 0, x: -50 }}
@@ -329,7 +296,7 @@ export default function App() {
         {/* Main Content (ref for scrolling) */}
         <main ref={mainContentRef} className="mx-auto max-w-5xl p-4 md:grid md:grid-cols-3 md:gap-8 md:p-6 scroll-mt-20">
           
-          {/* --- Controls Panel (Your code is perfect) --- */}
+          {/* --- Controls Panel --- */}
           <motion.div
             initial={{ opacity: 0, y: 50 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -381,21 +348,21 @@ export default function App() {
                     type="radio" name="task" value="transcribe" checked={task === 'transcribe'}
                     onChange={onTaskChange} className="h-4 w-4 accent-blue-600"
                   />
-                  <span>Transcription <span className="text-gray-400">(Original Language)</span></span>
+                  <span>Transcription <span className="text-gray-400"></span></span>
                 </label>
                 <label className="inline-flex items-center gap-2 text-gray-200">
                   <input
                     type="radio" name="task" value="translate" checked={task === 'translate'}
                     onChange={onTaskChange} className="h-4 w-4 accent-blue-600"
                   />
-                  <span>Translation <span className="text-gray-400">(to English)</span></span>
+                  <span>Translation <span className="text-gray-400"></span></span>
                 </label>
                 <label className="inline-flex items-center gap-2 text-gray-200">
                   <input
                     type="radio" name="task" value="transliterate" checked={task === 'transliterate'}
                     onChange={onTaskChange} className="h-4 w-4 accent-blue-600"
                   />
-                  <span>Transliteration <span className="text-gray-400">(e.g., नमस्ते {'>'} namaste)</span></span>
+                  <span>Transliteration <span className="text-gray-400"></span></span>
                 </label>
               </div>
             </div>
@@ -417,27 +384,29 @@ export default function App() {
               <p className="mt-1 text-xs text-gray-500">The primary language spoken in your video.</p>
             </div>
 
-            {/* Submit Button */}
+            {/* --- Submit Button (Logic Updated) --- */}
             <div className="mt-8">
               <button
                 onClick={onSubmit}
-                disabled={!file || isSubmitting || isPolling} // <-- CHANGED: Disable on poll
+                disabled={!file || isLoading} // <-- CHANGED
                 className="flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-lg transition-all hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {/* --- CHANGED: Show correct loading state --- */}
-                {(isSubmitting || isPolling) ? (
+                {isLoading ? ( // <-- CHANGED
                   <> 
                     <ClipLoader color="#ffffff" size={20} /> 
-                    <span>{isSubmitting ? 'Uploading...' : 'Processing...'}</span> 
+                    <span>Processing...</span> 
                   </>
                 ) : (
                   <> <FiUpload /> <span>Generate Captions</span> </>
                 )}
+                <p className="mt-2 text-center text-xs text-gray-900">
+    Note: This is a free demo on shared hardware. Processing may take several minutes.
+  </p>
               </button>
             </div>
           </motion.div>
 
-          {/* --- Results Area (Your code is perfect) --- */}
+          {/* --- Results Area --- */}
           <motion.div
             className="mt-8 flex flex-col gap-8 md:col-span-2 md:mt-0"
           >
@@ -500,8 +469,8 @@ export default function App() {
                 )}
               </div>
 
-              {/* --- CHANGED: Show loading/empty state correctly --- */}
-              {!segments && !isPolling && !isSubmitting && (
+              {/* --- CHANGED: Show loading/empty/error state correctly --- */}
+              {!segments && !isLoading && !error && (
                 <div className="flex h-48 items-center justify-center rounded-md border-2 border-dashed border-gray-700">
                   <p className="text-center text-sm text-gray-500">
                     Your generated transcript will appear here.
@@ -509,14 +478,22 @@ export default function App() {
                 </div>
               )}
               
-              {(isPolling || isSubmitting) && !segments && (
+              {isLoading && !segments && (
                 <div className="flex h-48 items-center justify-center rounded-md border-2 border-dashed border-gray-700">
                   <div className="flex flex-col items-center gap-2">
                     <ClipLoader color="#3B82F6" size={30} />
                     <p className="text-center text-sm text-gray-400">
-                      {isSubmitting ? 'Uploading...' : 'Processing...'}
-                    </p>
+                      Processing... (This may take several minutes)
+                    </p> 
                   </div>
+                </div>
+              )}
+
+              {error && (
+                <div className="flex h-48 items-center justify-center rounded-md border-2 border-dashed border-red-700/50 bg-red-900/10">
+                  <p className="text-center text-sm text-red-400">
+                    <strong>Error:</strong> {error}
+                  </p>
                 </div>
               )}
 
@@ -537,7 +514,7 @@ export default function App() {
           </motion.div>
         </main>
 
-        {/* --- Footer (Your code is perfect) --- */}
+        {/* --- Footer --- */}
         <footer className={`p-4 md:p-8 lg:p-10 mt-16 border-t ${isDesktop ? 'border-gray-700/50 bg-[#212D40]/80 backdrop-blur-md' : 'border-gray-700 bg-[#212D40]'}`}>
           <div className="mx-auto max-w-screen-xl text-center">
             <motion.a
