@@ -1,138 +1,141 @@
-## Video Caption Generator — Minimal SaaS MVP
+🎬 CAPTIQ — AI Video Caption Generator
 
-This repository contains a minimal, production-ready MVP for a SaaS that generates captions for uploaded videos using OpenAI Whisper.
+CAPTIQ is a full-stack, AI-powered web application that generates timestamped captions for video files.
+Built using a 100% free tech stack — Vercel (frontend) + Hugging Face (backend).
 
-### What you get
-- Frontend: Next.js (React + Tailwind), Vercel-ready.
-- Backend: FastAPI (Python), Render/Railway-ready.
-- Users upload a video (mp4/mov), preview it, click "Generate Captions", and receive timestamped captions.
-- Captions are displayed under the video and also rendered as subtitles via a `<track>` overlay (WebVTT).
+🔗 Live Project: https://captiq.vercel.app/
 
----
+⚠️ Performance Notice
 
-## Architecture
-- Frontend (`frontend/`): Next.js App Router, Tailwind UI.
-- Backend (`backend/`): FastAPI with an `/upload` endpoint.
-- Audio extraction: ffmpeg (bundled via `imageio-ffmpeg`, no system install needed).
-- Transcription: OpenAI Whisper API (`whisper-1`) with `response_format=verbose_json` for timestamped segments.
+This project uses a free CPU-only Hugging Face Space.
+⏳ As a result, transcription can be slow — a 1-minute video may take 5–10 minutes.
+This is a purposeful design choice to demonstrate a zero-cost AI architecture.
 
----
+🚀 Features
 
-## Prerequisites
-- Node.js >= 18
-- Python >= 3.9
-- OpenAI API key
+🔐 User Authentication — Powered by Clerk
 
----
+🎞️ Video/Audio Upload — Drag-and-drop UI (React Dropzone)
 
-## Local Setup
+🤖 AI Transcription — Whisper “base” model
 
-### 1) Backend (FastAPI)
-```
-cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+🌍 AI Translation — Convert any language to English
 
-# Set your API key in your shell (recommended)
-export OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+⚛️ Modern Frontend — Vite, React, TypeScript, TailwindCSS
 
-# Run the server
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
+🎨 Animated UI — 3D background using Spline
 
-The API will be available at `http://localhost:8000`.
+📄 Export Options — Download captions as .srt or .txt
 
-### 2) Frontend (Next.js)
-```
-cd frontend
+🏗️ Architecture Overview
+🌐 Frontend — Vercel
+
+React + Vite static frontend
+
+Clerk auth
+
+File upload & UI
+
+Direct API calls to backend (no Vercel functions)
+
+🔧 Backend — Hugging Face (Gradio + FastAPI)
+
+Hosted as a Space
+
+Provides /upload endpoint
+
+Runs Whisper on CPU basic (free tier)
+
+CORS enabled for browser access
+
+🧩 Local Setup
+Prerequisites
+
+Node.js v18+
+
+Free Clerk account
+
+Free Hugging Face account
+
+1️⃣ Backend Setup (Hugging Face)
+
+The backend is designed to run on Hugging Face, not locally.
+
+Create a new Space
+
+Choose Gradio SDK
+
+Select CPU basic hardware
+
+Add:
+
+📄 requirements.txt
+fastapi
+uvicorn
+python-multipart
+openai-whisper
+torch
+indic-transliteration
+gradio
+
+📄 app.py
+
+Paste your backend Python code here.
+
+Wait for build (5–10 minutes)
+
+Copy your Space URL:
+👉 https://yourname-yourspace.hf.space
+
+2️⃣ Frontend Setup (Local)
+
+Clone project
+
+Install dependencies:
+
+cd frontend-vite
 npm install
 
-# Configure the backend URL
+
+Create environment file:
+
 cp .env.local.example .env.local
-# Edit .env.local if needed (defaults to http://localhost:8000)
+
+
+Add Clerk publishable key:
+
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
+
+
+Update backend URL in src/App.tsx:
+
+const HF_API_URL = "https://yourname-yourspace.hf.space/upload";
+
+
+Run locally:
 
 npm run dev
-```
 
-The app will be available at `http://localhost:3000`.
+🚀 Deploying to Vercel
 
----
+Push repository to GitHub
 
-## How it works
-1. User selects a video (mp4 or mov) and sees a preview.
-2. Clicking "Generate Captions" uploads the file to the FastAPI `/upload` endpoint.
-3. Backend saves the video temporarily, extracts audio to WAV using ffmpeg, sends audio to OpenAI Whisper (`whisper-1`) with `response_format=verbose_json`.
-4. Backend returns JSON with `segments` (start, end, text).
-5. Frontend shows the text under the video and renders a WebVTT `<track>` overlay for subtitles.
+Import repo into Vercel
 
----
+Add environment variable:
 
-## Environment Variables
-- Backend
-  - `OPENAI_API_KEY`: Your OpenAI API key. Set this on Render/Railway dashboard for the service.
-  - Optional: `CORS_ALLOW_ORIGINS` (comma-separated, e.g. `http://localhost:3000,https://yourapp.vercel.app`). Defaults to `*` for MVP.
+VITE_CLERK_PUBLISHABLE_KEY
 
-- Frontend
-  - `NEXT_PUBLIC_API_BASE_URL`: Base URL of the backend. Locally defaults to `http://localhost:8000` (see `.env.local.example`).
+Deploy — Vercel auto-detects Vite
 
----
+📚 What I Learned
 
-## Deployment
+🧩 Connecting a full-stack React + Python architecture
 
-### Deploy Backend on Render (Free Tier)
-1. Push this repo to GitHub.
-2. Create a new Render Web Service:
-   - Runtime: Python 3.11 (or compatible)
-   - Build Command: `pip install -r backend/requirements.txt`
-   - Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-   - Root Directory: `backend`
-3. Add Environment Variable: `OPENAI_API_KEY`.
-4. (Optional) Add `CORS_ALLOW_ORIGINS` to allow your Vercel domain.
-5. Deploy. Note your Render URL (e.g., `https://your-backend.onrender.com`).
+🔥 Why Vercel functions fail for long-running AI tasks
 
-### Deploy Backend on Railway (Free Tier)
-1. Create a new Railway project from this repo.
-2. Set Service root to `backend/`.
-3. Set `OPENAI_API_KEY` in Variables.
-4. Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`.
-5. Deploy. Note your Railway domain.
+🔄 How to shift to a browser → Hugging Face model
 
-### Deploy Frontend on Vercel
-1. Import the repo in Vercel.
-2. Project root: `frontend`.
-3. Environment Variable: `NEXT_PUBLIC_API_BASE_URL` → your Render/Railway backend URL.
-4. Deploy.
+🐢 Handling slow CPU Whisper performance
 
----
-
-## API
-### POST `/upload`
-Multipart form-data with field `file` (mp4/mov).
-
-Response (JSON):
-```
-{
-  "language": "en",
-  "duration_seconds": 12.34,
-  "segments": [
-    { "index": 1, "start": 0.0, "end": 2.34, "text": "Hello" },
-    { "index": 2, "start": 2.34, "end": 5.67, "text": "world" }
-  ]
-}
-```
-
----
-
-## Notes
-- Keep videos short for the free tiers.
-- ffmpeg is provided via `imageio-ffmpeg` so you don't need any system packages.
-- The code is structured to swap storage later (e.g., Cloudinary/Supabase) by replacing the temporary file handling.
-
----
-
-## Troubleshooting
-- 400 Unsupported file type: ensure the input is mp4 or mov.
-- 500 OpenAI errors: verify `OPENAI_API_KEY`, check Whisper availability.
-- CORS errors: set `CORS_ALLOW_ORIGINS` on backend to your frontend domain.
-
+🛠️ Debugging npm issues, Python imports, and CORS configs
