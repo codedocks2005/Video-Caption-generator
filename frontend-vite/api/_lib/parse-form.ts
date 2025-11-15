@@ -1,7 +1,8 @@
-// api/_lib/parse-form.ts
 import type { VercelRequest } from '@vercel/node';
 import formidable from 'formidable';
+import type { File } from 'formidable';
 
+// This helper parses the file and fields from your <form>
 export const parseForm = (
   req: VercelRequest
 ): Promise<{ fields: formidable.Fields; files: formidable.Files }> => {
